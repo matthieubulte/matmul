@@ -1,6 +1,5 @@
 // gcc -O3 -ffast-math -g -march=native main.c -o main
 #include <math.h>
-#include <stdio.h>
 #include <string.h>
 #include <time.h>
 #include <arm_neon.h>
@@ -42,13 +41,13 @@ inline void load_b_buff(float *B_buff, float *B, int row, int col)
     }
 }
 
-// Load a block of C into simd registers
-inline void load_c_buff(float32x4_t *C_buff, float *C, int i, int j)
+// Reset the simd C registers
+inline void zero_c_buff(float32x4_t *C_buff)
 {
     for (int ii = 0; ii < BS; ii++)
     {
-        C_buff[ii * BS] = vld1q_f32(&C[(i + ii) * N + j]);
-        C_buff[ii * BS + 1] = vld1q_f32(&C[(i + ii) * N + j + 4]);
+        C_buff[ii * BS] = vdupq_n_f32(0.0f);
+        C_buff[ii * BS + 1] = vdupq_n_f32(0.0f);
     }
 }
 
@@ -82,6 +81,8 @@ inline void block_mul(float *A_buff, float *B_buff, float32x4_t *C_buff)
         float32x4_t a6 = LOAD_FROM_BUFF1(A_buff, 6, k);
         float32x4_t a7 = LOAD_FROM_BUFF1(A_buff, 7, k);
 
+        // TODO: this assumes that C_buff has (flattened) layout (8, 2) (8*8 floats)
+        // should be agnostic to BS and be (BS, BS/4)
         ADD_MUL(C_buff[0], a0, b0);
         ADD_MUL(C_buff[1], a0, b1);
 
@@ -115,7 +116,7 @@ inline void block_mul(float *A_buff, float *B_buff, float32x4_t *C_buff)
 // 98.16ms         21.8765 GFLOPS/S -- baseline with the right order of loops
 // 44.50ms         48.2624 GFLOPS/S -- + vectorization
 // 35.47ms         60.5471 GFLOPS/S -- + block multiplication
-// 28.38ms         75.6662 GFLOPS/S -- + choosing the right lbock size (8)
+// 28.38ms         75.6662 GFLOPS/S -- + choosing the right block size (8)
 // 27.21ms         78.9313 GFLOPS/S -- + loop unrolling for register control
 // 31.08ms         69.0954 GFLOPS/S -- fix mistake in loading B
 void multiply(float *A, float *B, float *C)
@@ -126,7 +127,7 @@ void multiply(float *A, float *B, float *C)
 
     // To optimize register usage, use 16 (out of 32) simd registers
     // for the C submatrix buffer. 16 register of 4 floats each = 8x8 matrix
-    static float32x4_t C_buff[BS * 2];
+    static float32x4_t C_buff[BS * BS / 4];
 
     // Simple algorighm that uses blocks of size BS
     // and tries to keep the same data as long as possible in registers
@@ -134,7 +135,7 @@ void multiply(float *A, float *B, float *C)
     {
         for (int j = 0; j < N; j += BS)
         {
-            load_c_buff(C_buff, C, i, j);
+            zero_c_buff(C_buff);
 
             for (int k = 0; k < N; k += BS)
             {
@@ -153,6 +154,7 @@ void benchmark(float *A, float *B, float *C);
 int compare_matrices(const float *A, const float *B, float tol);
 void fill_rand(float *A, int n);
 void assert_correct(float *A, float *B, float *C, float *C1);
+void assert_correct_meh(float *A, float *B, float *C, float *A1, float *B1, float *C1);
 
 int main()
 {
@@ -190,7 +192,9 @@ int main()
         // This thesis is semi-verified by the fact that calling benchmark(...) again
         // with other matrices doesn't change the performance, although we're changing
         // what's in the cache
-        benchmark(A1, B1, C1);
+        // benchmark(A1, B1, C1);
+
+        // assert_correct_meh(A, B, C, A1, B1, C1); // This is to make sure that A1,B1,C1 aren't optimized away
     }
     return 0;
 }
@@ -199,6 +203,19 @@ int main()
 // #######################################  The boring stuff
 // ############################################################
 
+void assert_correct_meh(float *A, float *B, float *C, float *A1, float *B1, float *C1)
+{
+
+    for (int i = 0; i < N * N; i++)
+    {
+        if (fabsf(A[i] - A1[i]) + fabsf(B[i] - B1[i]) + fabsf(C[i] - C1[i]) + 1 < 1e-15)
+        {
+            printf("------------------------+-----------------------+\n");
+            return;
+        }
+    }
+}
+
 void benchmark(float *A, float *B, float *C)
 {
     clock_t start, end;
@@ -206,13 +223,13 @@ void benchmark(float *A, float *B, float *C)
     float flops = 2.0 * N * N * N;
 
     start = clock();
-    
-    #ifdef BENCH_BLAS
+
+#ifdef BENCH_BLAS
     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                 N, N, N, 1.0, A, N, B, N, 0.0, C, N);
-    #else
+#else
     multiply(A, B, C);
-    #endif
+#endif
 
     end = clock();
     duration_ms = ((float)(end - start) * 1000.0) / CLOCKS_PER_SEC;

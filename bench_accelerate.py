@@ -3,8 +3,9 @@ import ctypes
 from numpy.ctypeslib import ndpointer
 import time
 
+DIM = 1024
+
 if __name__ == "__main__":
-    DIM = 1024
 
     accelerate = ctypes.cdll.LoadLibrary(
         "/System/Library/Frameworks/Accelerate.framework/Accelerate"
